@@ -1,1 +1,680 @@
-# Freecam-Roblox-mobile
+-- LocalScript (Coloque em StarterPlayerScripts)
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local StarterGui = game:GetService("StarterGui")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local camera = Workspace.CurrentCamera
+
+-- Variáveis de controle principais
+local isFreecamActive = false
+local isHudHidden = false
+local isAdvancedCleanActive = false
+local camPosition = Vector3.new(0, 50, 0)
+local camRotation = Vector2.new(0, 0)
+local targetCamRotation = Vector2.new(0, 0)
+
+-- Configurações
+local config = {
+	moveSpeed = 0.5,
+	zoomSpeed = 150,
+	zoomStrength = 2500,
+	sensitivity = 0.012,
+	swipeInertia = 1.0
+}
+
+local currentSpeed = 0
+local acceleration = 3.0
+local currentZoomFOV = 70
+local zoomInputVal = 0
+local swipeVelocity = Vector2.new(0, 0)
+
+-- Criar a Interface Principal (ScreenGui)
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "MobileFreecamGui"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = playerGui
+
+-- =========================================================================
+-- 1. PAINEL PRINCIPAL (Freecam + Configurações) - Arrastável com Cadeado
+-- =========================================================================
+local rightPanel = Instance.new("Frame")
+rightPanel.Name = "RightPanel"
+rightPanel.Size = UDim2.new(0, 115, 0, 50)
+rightPanel.Position = UDim2.new(1, -130, 0.5, -60)
+rightPanel.BackgroundTransparency = 1
+rightPanel.Active = true
+rightPanel.Parent = screenGui
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Name = "ToggleFreecam"
+toggleBtn.Size = UDim2.new(0, 50, 0, 50)
+toggleBtn.Position = UDim2.new(0, 0, 0, 0)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+toggleBtn.BackgroundTransparency = 0.3
+toggleBtn.Text = "📷"
+toggleBtn.TextSize = 22
+toggleBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+toggleBtn.Active = true
+toggleBtn.Parent = rightPanel
+Instance.new("UICorner", toggleBtn).CornerRadius = UDim.new(0, 10)
+
+local lockBtn = Instance.new("TextButton")
+lockBtn.Name = "LockToggle"
+lockBtn.Size = UDim2.new(0, 18, 0, 18)
+lockBtn.Position = UDim2.new(1, -16, 0, -2)
+lockBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+lockBtn.Text = "🔒"
+lockBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+lockBtn.TextSize = 9
+lockBtn.Active = true
+lockBtn.Parent = toggleBtn
+Instance.new("UICorner", lockBtn).CornerRadius = UDim.new(0, 4)
+
+local settingsBtn = Instance.new("TextButton")
+settingsBtn.Name = "SettingsButton"
+settingsBtn.Size = UDim2.new(0, 50, 0, 50)
+settingsBtn.Position = UDim2.new(0, 58, 0, 0)
+settingsBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+settingsBtn.BackgroundTransparency = 0.3
+settingsBtn.Text = "⚙️"
+settingsBtn.TextSize = 22
+settingsBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+settingsBtn.Active = true
+settingsBtn.Parent = rightPanel
+Instance.new("UICorner", settingsBtn).CornerRadius = UDim.new(0, 10)
+
+local isUnlocked = false
+local draggingPanel = false
+local startPosPanel, startMousePos
+
+rightPanel.InputBegan:Connect(function(input)
+	if isUnlocked and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+		draggingPanel = true
+		startMousePos = input.Position
+		startPosPanel = rightPanel.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				draggingPanel = false
+			end
+		end)
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if draggingPanel and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - startMousePos
+		rightPanel.Position = UDim2.new(startPosPanel.X.Scale, startPosPanel.X.Offset + delta.X, startPosPanel.Y.Scale, startPosPanel.Y.Offset + delta.Y)
+	end
+end)
+
+lockBtn.MouseButton1Click:Connect(function()
+	isUnlocked = not isUnlocked
+	if isUnlocked then
+		lockBtn.Text = "🔓"
+		lockBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+	else
+		lockBtn.Text = "🔒"
+		lockBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+	end
+end)
+
+-- =========================================================================
+-- 2. PAINEL DE ZOOM (+ e -) - Arrastável com Cadeado Próprio
+-- =========================================================================
+local zoomPanel = Instance.new("Frame")
+zoomPanel.Name = "ZoomPanel"
+zoomPanel.Size = UDim2.new(0, 50, 0, 100)
+zoomPanel.Position = UDim2.new(1, -70, 0.5, -130)
+zoomPanel.BackgroundTransparency = 1
+zoomPanel.Visible = false
+zoomPanel.Parent = screenGui
+
+local function createZoomButton(name, text, posY)
+	local btn = Instance.new("TextButton")
+	btn.Name = name
+	btn.Size = UDim2.new(0, 50, 0, 45)
+	btn.Position = UDim2.new(0, 0, 0, posY)
+	btn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	btn.BackgroundTransparency = 0.4
+	btn.Text = text
+	btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	btn.TextSize = 22
+	btn.Font = Enum.Font.SourceSansBold
+	btn.Active = true
+	btn.Parent = zoomPanel
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+	return btn
+end
+
+local zoomInBtn = createZoomButton("ZoomIn", "+", 0)
+local zoomOutBtn = createZoomButton("ZoomOut", "-", 55)
+
+local zoomLockBtn = Instance.new("TextButton")
+zoomLockBtn.Name = "ZoomLockToggle"
+zoomLockBtn.Size = UDim2.new(0, 16, 0, 16)
+zoomLockBtn.Position = UDim2.new(1, -14, 0, -2)
+zoomLockBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+zoomLockBtn.Text = "🔒"
+zoomLockBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+zoomLockBtn.TextSize = 8
+zoomLockBtn.Active = true
+zoomLockBtn.Parent = zoomInBtn
+Instance.new("UICorner", zoomLockBtn).CornerRadius = UDim.new(0, 4)
+
+local isZoomUnlocked = false
+local draggingZoom = false
+local startPosZoom, startMouseZoom
+
+zoomPanel.InputBegan:Connect(function(input)
+	if isZoomUnlocked and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+		draggingZoom = true
+		startMouseZoom = input.Position
+		startPosZoom = zoomPanel.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				draggingZoom = false
+			end
+		end)
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if draggingZoom and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - startMouseZoom
+		zoomPanel.Position = UDim2.new(startPosZoom.X.Scale, startPosZoom.X.Offset + delta.X, startPosZoom.Y.Scale, startPosZoom.Y.Offset + delta.Y)
+	end
+end)
+
+zoomLockBtn.MouseButton1Click:Connect(function()
+	isZoomUnlocked = not isZoomUnlocked
+	if isZoomUnlocked then
+		zoomLockBtn.Text = "🔓"
+		zoomLockBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+	else
+		zoomLockBtn.Text = "🔒"
+		zoomLockBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+	end
+end)
+
+-- =========================================================================
+-- 3. PAINEL DE MOVIMENTO (Setas) - Arrastável com Cadeado Próprio
+-- =========================================================================
+local controlFrame = Instance.new("Frame")
+controlFrame.Name = "ControlFrame"
+controlFrame.Size = UDim2.new(0, 140, 0, 140)
+controlFrame.Position = UDim2.new(0, 20, 1, -170)
+controlFrame.BackgroundTransparency = 1
+controlFrame.Visible = false
+controlFrame.Parent = screenGui
+
+local function createArrowButton(name, text, pos)
+	local btn = Instance.new("TextButton")
+	btn.Name = name
+	btn.Size = UDim2.new(0, 40, 0, 40)
+	btn.Position = pos
+	btn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	btn.BackgroundTransparency = 0.4
+	btn.Text = text
+	btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	btn.TextSize = 22
+	btn.Font = Enum.Font.SourceSansBold
+	btn.Active = true
+	btn.Parent = controlFrame
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+	return btn
+end
+
+local btnUp = createArrowButton("BtnUp", "^", UDim2.new(0.35, 0, 0, 0))
+local btnDown = createArrowButton("BtnDown", "v", UDim2.new(0.35, 0, 0.65, 0))
+local btnLeft = createArrowButton("BtnLeft", "<", UDim2.new(0, 0, 0.35, 0))
+local btnRight = createArrowButton("BtnRight", ">", UDim2.new(0.65, 0, 0.35, 0))
+
+-- Botão de Cadeado do Movimento (Fica em cima do botão Up)
+local moveLockBtn = Instance.new("TextButton")
+moveLockBtn.Name = "MoveLockToggle"
+moveLockBtn.Size = UDim2.new(0, 16, 0, 16)
+moveLockBtn.Position = UDim2.new(1, -14, 0, -2)
+moveLockBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+moveLockBtn.Text = "🔒"
+moveLockBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+moveLockBtn.TextSize = 8
+moveLockBtn.Active = true
+moveLockBtn.Parent = btnUp
+Instance.new("UICorner", moveLockBtn).CornerRadius = UDim.new(0, 4)
+
+local isMoveUnlocked = false
+local draggingMove = false
+local startPosMove, startMouseMove
+
+controlFrame.InputBegan:Connect(function(input)
+	if isMoveUnlocked and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+		draggingMove = true
+		startMouseMove = input.Position
+		startPosMove = controlFrame.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				draggingMove = false
+			end
+		end)
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if draggingMove and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - startMouseMove
+		controlFrame.Position = UDim2.new(startPosMove.X.Scale, startPosMove.X.Offset + delta.X, startPosMove.Y.Scale, startPosMove.Y.Offset + delta.Y)
+	end
+end)
+
+moveLockBtn.MouseButton1Click:Connect(function()
+	isMoveUnlocked = not isMoveUnlocked
+	if isMoveUnlocked then
+		moveLockBtn.Text = "🔓"
+		moveLockBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+	else
+		moveLockBtn.Text = "🔒"
+		moveLockBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+	end
+end)
+
+-- =========================================================================
+-- 4. PAINEL DE LIMPAR TELA - Arrastável com Cadeado Próprio
+-- =========================================================================
+local hidePanel = Instance.new("Frame")
+hidePanel.Name = "HidePanel"
+hidePanel.Size = UDim2.new(0, 50, 0, 50)
+hidePanel.Position = UDim2.new(1, -70, 1, -120)
+hidePanel.BackgroundTransparency = 1
+hidePanel.Active = true
+hidePanel.Parent = screenGui
+
+local hideHudBtn = Instance.new("TextButton")
+hideHudBtn.Name = "HideHudButton"
+hideHudBtn.Size = UDim2.new(0, 50, 0, 50)
+hideHudBtn.Position = UDim2.new(0, 0, 0, 0)
+hideHudBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+hideHudBtn.BackgroundTransparency = 0.3
+hideHudBtn.Text = "👁️‍🗨️"
+hideHudBtn.TextSize = 20
+hideHudBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+hideHudBtn.Active = true
+hideHudBtn.Parent = hidePanel
+Instance.new("UICorner", hideHudBtn).CornerRadius = UDim.new(0, 10)
+
+local hideLockBtn = Instance.new("TextButton")
+hideLockBtn.Name = "HideLockToggle"
+hideLockBtn.Size = UDim2.new(0, 18, 0, 18)
+hideLockBtn.Position = UDim2.new(1, -16, 0, -2)
+hideLockBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+hideLockBtn.Text = "🔒"
+hideLockBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+hideLockBtn.TextSize = 9
+hideLockBtn.Active = true
+hideLockBtn.Parent = hideHudBtn
+Instance.new("UICorner", hideLockBtn).CornerRadius = UDim.new(0, 4)
+
+local isHideUnlocked = false
+local draggingHide = false
+local startPosHide, startMouseHide
+
+hidePanel.InputBegan:Connect(function(input)
+	if isHideUnlocked and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+		draggingHide = true
+		startMouseHide = input.Position
+		startPosHide = hidePanel.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				draggingHide = false
+			end
+		end)
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if draggingHide and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - startMouseHide
+		hidePanel.Position = UDim2.new(startPosHide.X.Scale, startPosHide.X.Offset + delta.X, startPosHide.Y.Scale, startPosHide.Y.Offset + delta.Y)
+	end
+end)
+
+hideLockBtn.MouseButton1Click:Connect(function()
+	isHideUnlocked = not isHideUnlocked
+	if isHideUnlocked then
+		hideLockBtn.Text = "🔓"
+		hideLockBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+	else
+		hideLockBtn.Text = "🔒"
+		hideLockBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+	end
+end)
+
+-- =========================================================================
+-- DIÁLOGO / AVISO INTELIGENTE (Freecam + Limpar Tela)
+-- =========================================================================
+local dialogBox = Instance.new("Frame")
+dialogBox.Size = UDim2.new(0, 280, 0, 130)
+dialogBox.Position = UDim2.new(0.5, -140, 0.5, -65)
+dialogBox.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+dialogBox.BackgroundTransparency = 0.1
+dialogBox.Visible = false
+dialogBox.Active = true
+dialogBox.ZIndex = 10
+dialogBox.Parent = screenGui
+Instance.new("UICorner", dialogBox).CornerRadius = UDim.new(0, 10)
+
+local dialogText = Instance.new("TextLabel")
+dialogText.Size = UDim2.new(0.9, 0, 0, 60)
+dialogText.Position = UDim2.new(0.05, 0, 0.05, 0)
+dialogText.BackgroundTransparency = 1
+dialogText.Text = "Deseja ativar o modo Freecam + Limpar Tela mantendo os botões de movimento e zoom?"
+dialogText.TextColor3 = Color3.fromRGB(255, 255, 255)
+dialogText.TextSize = 13
+dialogText.Font = Enum.Font.SourceSansBold
+dialogText.TextWrapped = true
+dialogText.ZIndex = 11
+dialogText.Parent = dialogBox
+
+local yesBtn = Instance.new("TextButton")
+yesBtn.Size = UDim2.new(0.4, 0, 0, 35)
+yesBtn.Position = UDim2.new(0.05, 0, 0.68, 0)
+yesBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+yesBtn.Text = "Sim"
+yesBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+yesBtn.TextSize = 14
+yesBtn.Font = Enum.Font.SourceSansBold
+yesBtn.ZIndex = 11
+yesBtn.Parent = dialogBox
+Instance.new("UICorner", yesBtn).CornerRadius = UDim.new(0, 6)
+
+local noBtn = Instance.new("TextButton")
+noBtn.Size = UDim2.new(0.4, 0, 0, 35)
+noBtn.Position = UDim2.new(0.55, 0, 0.68, 0)
+noBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+noBtn.Text = "Não (Limpar Tudo)"
+noBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+noBtn.TextSize = 14
+noBtn.Font = Enum.Font.SourceSansBold
+noBtn.ZIndex = 11
+noBtn.Parent = dialogBox
+Instance.new("UICorner", noBtn).CornerRadius = UDim.new(0, 6)
+
+-- =========================================================================
+-- PAINEL DE CONFIGURAÇÕES
+-- =========================================================================
+local settingsFrame = Instance.new("Frame")
+settingsFrame.Name = "SettingsFrame"
+settingsFrame.Size = UDim2.new(0, 240, 0, 310)
+settingsFrame.Position = UDim2.new(0.5, -120, 0.5, -155)
+settingsFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+settingsFrame.BackgroundTransparency = 0.1
+settingsFrame.Visible = false
+settingsFrame.Active = true
+settingsFrame.Parent = screenGui
+Instance.new("UICorner", settingsFrame).CornerRadius = UDim.new(0, 10)
+
+local function createLabel(text, posY)
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(0.9, 0, 0, 18)
+	lbl.Position = UDim2.new(0.05, 0, 0, posY)
+	lbl.BackgroundTransparency = 1
+	lbl.Text = text
+	lbl.TextColor3 = Color3.fromRGB(220, 220, 220)
+	lbl.TextSize = 11
+	lbl.Font = Enum.Font.SourceSansBold
+	lbl.TextXAlignment = Enum.TextXAlignment.Left
+	lbl.Parent = settingsFrame
+	return lbl
+end
+
+local function createBox(defaultVal, posY)
+	local box = Instance.new("TextBox")
+	box.Size = UDim2.new(0.9, 0, 0, 24)
+	box.Position = UDim2.new(0.05, 0, 0, posY)
+	box.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+	box.TextColor3 = Color3.fromRGB(255, 255, 255)
+	box.Text = tostring(defaultVal)
+	box.TextSize = 12
+	box.Font = Enum.Font.SourceSansBold
+	box.Active = true
+	box.Parent = settingsFrame
+	Instance.new("UICorner", box).CornerRadius = UDim.new(0, 6)
+	return box
+end
+
+createLabel("Velocidade de Movimento:", 10)
+local speedBox = createBox(config.moveSpeed, 27)
+
+createLabel("Velocidade do Zoom:", 57)
+local zoomSpdBox = createBox(config.zoomSpeed, 74)
+
+createLabel("FOV / Força do Zoom:", 104)
+local zoomStrBox = createBox(config.zoomStrength, 121)
+
+createLabel("Sensibilidade da Câmera:", 151)
+local sensBox = createBox(config.sensitivity, 168)
+
+createLabel("Sensibilidade de Deslizamento:", 198)
+local inertiaBox = createBox(config.swipeInertia, 215)
+
+local function applySettings()
+	config.moveSpeed = math.clamp(tonumber(speedBox.Text) or config.moveSpeed, 0.1, 10)
+	config.zoomSpeed = math.clamp(tonumber(zoomSpdBox.Text) or config.zoomSpeed, 10, 500)
+	config.zoomStrength = math.clamp(tonumber(zoomStrBox.Text) or config.zoomStrength, 10, 5000)
+	config.sensitivity = math.clamp(tonumber(sensBox.Text) or config.sensitivity, 0.001, 0.05)
+	config.swipeInertia = math.clamp(tonumber(inertiaBox.Text) or config.swipeInertia, 0.1, 10)
+end
+
+speedBox:GetPropertyChangedSignal("Text"):Connect(applySettings)
+zoomSpdBox:GetPropertyChangedSignal("Text"):Connect(applySettings)
+zoomStrBox:GetPropertyChangedSignal("Text"):Connect(applySettings)
+sensBox:GetPropertyChangedSignal("Text"):Connect(applySettings)
+inertiaBox:GetPropertyChangedSignal("Text"):Connect(applySettings)
+
+settingsBtn.MouseButton1Click:Connect(function()
+	if draggingPanel then return end
+	settingsFrame.Visible = not settingsFrame.Visible
+end)
+
+-- Conexões de movimento e zoom
+local rawMoveInput = Vector3.new(0, 0, 0)
+local smoothMoveInput = Vector3.new(0, 0, 0)
+
+btnUp.MouseButton1Down:Connect(function() rawMoveInput = Vector3.new(0, 0, 1) end)
+btnUp.MouseButton1Up:Connect(function() rawMoveInput = Vector3.new(0, 0, 0) end)
+
+btnDown.MouseButton1Down:Connect(function() rawMoveInput = Vector3.new(0, 0, -1) end)
+btnDown.MouseButton1Up:Connect(function() rawMoveInput = Vector3.new(0, 0, 0) end)
+
+btnLeft.MouseButton1Down:Connect(function() rawMoveInput = Vector3.new(-1, 0, 0) end)
+btnLeft.MouseButton1Up:Connect(function() rawMoveInput = Vector3.new(0, 0, 0) end)
+
+btnRight.MouseButton1Down:Connect(function() rawMoveInput = Vector3.new(1, 0, 0) end)
+btnRight.MouseButton1Up:Connect(function() rawMoveInput = Vector3.new(0, 0, 0) end)
+
+zoomInBtn.MouseButton1Down:Connect(function() zoomInputVal = -1 end)
+zoomInBtn.MouseButton1Up:Connect(function() zoomInputVal = 0 end)
+
+zoomOutBtn.MouseButton1Down:Connect(function() zoomInputVal = 1 end)
+zoomOutBtn.MouseButton1Up:Connect(function() zoomInputVal = 0 end)
+
+-- =========================================================================
+-- LÓGICA DO BOTÃO DE LIMPAR TELA E AVISO INTELIGENTE
+-- =========================================================================
+hideHudBtn.MouseButton1Click:Connect(function()
+	if draggingHide then return end
+	
+	if isFreecamActive and not isHudHidden then
+		dialogBox.Visible = true
+	else
+		isHudHidden = not isHudHidden
+		isAdvancedCleanActive = false
+		pcall(function()
+			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, not isHudHidden)
+			StarterGui:SetCore("VRLaserPointerEnabled", not isHudHidden)
+			StarterGui:SetCore("ResetButtonCallback", not isHudHidden)
+		end)
+	end
+end)
+
+yesBtn.MouseButton1Click:Connect(function()
+	dialogBox.Visible = false
+	isHudHidden = true
+	isAdvancedCleanActive = true
+	pcall(function()
+		StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, false)
+		StarterGui:SetCore("VRLaserPointerEnabled", false)
+		StarterGui:SetCore("ResetButtonCallback", false)
+	end)
+end)
+
+noBtn.MouseButton1Click:Connect(function()
+	dialogBox.Visible = false
+	isHudHidden = true
+	isAdvancedCleanActive = false
+	pcall(function()
+		StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, false)
+		StarterGui:SetCore("VRLaserPointerEnabled", false)
+		StarterGui:SetCore("ResetButtonCallback", false)
+	end)
+end)
+
+-- =========================================================================
+-- SISTEMA DE DESLIZAMENTO DE CÂMERA (Liberado no modo avançado)
+-- =========================================================================
+local activeSwipeInput = nil
+local lastTouchPos = Vector2.new(0, 0)
+
+UserInputService.InputBegan:Connect(function(input)
+	if isFreecamActive and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+		-- Se a hud estiver oculta mas for o modo avançado, permite mover a câmera livremente pela tela
+		local pos = input.Position
+		if not activeSwipeInput then
+			activeSwipeInput = input
+			lastTouchPos = pos
+			swipeVelocity = Vector2.new(0, 0)
+		end
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if input == activeSwipeInput and isFreecamActive then
+		local pos = input.Position
+		local delta = pos - lastTouchPos
+		lastTouchPos = pos
+		
+		swipeVelocity = delta
+		targetCamRotation = targetCamRotation - Vector2.new(delta.X * config.sensitivity, delta.Y * config.sensitivity)
+		targetCamRotation = Vector2.new(targetCamRotation.X, math.clamp(targetCamRotation.Y, -1.4, 1.4))
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input == activeSwipeInput then
+		activeSwipeInput = nil
+	end
+end)
+
+-- =========================================================================
+-- ATIVAR / DESATIVAR FREECAM
+-- =========================================================================
+local function toggleFreecamState()
+	if draggingPanel then return end
+	
+	isFreecamActive = not isFreecamActive
+	
+	if isFreecamActive then
+		if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+			camPosition = player.Character.HumanoidRootPart.Position + Vector3.new(0, 15, 10)
+		end
+		camera.CameraType = Enum.CameraType.Scriptable
+		currentZoomFOV = camera.FieldOfView
+		currentSpeed = 0
+		activeSwipeInput = nil
+		targetCamRotation = camRotation
+		smoothMoveInput = Vector3.new(0, 0, 0)
+		rawMoveInput = Vector3.new(0, 0, 0)
+	else
+		camera.CameraType = Enum.CameraType.Custom
+		camera.FieldOfView = 70
+		settingsFrame.Visible = false
+		dialogBox.Visible = false
+		activeSwipeInput = nil
+		if isHudHidden then
+			isHudHidden = false
+			isAdvancedCleanActive = false
+			pcall(function()
+				StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, true)
+				StarterGui:SetCore("VRLaserPointerEnabled", true)
+				StarterGui:SetCore("ResetButtonCallback", true)
+			end)
+		end
+	end
+end
+
+toggleBtn.MouseButton1Click:Connect(toggleFreecamState)
+
+-- =========================================================================
+-- LOOP DE ATUALIZAÇÃO PRINCIPAL
+-- =========================================================================
+RunService.RenderStepped:Connect(function(dt)
+	if isFreecamActive then
+		if not activeSwipeInput and swipeVelocity.Magnitude > 0.05 then
+			swipeVelocity = swipeVelocity * math.clamp(1 - (2.5 * dt), 0, 1)
+			targetCamRotation = targetCamRotation - Vector2.new(swipeVelocity.X * config.sensitivity * config.swipeInertia, swipeVelocity.Y * config.sensitivity * config.swipeInertia)
+			targetCamRotation = Vector2.new(targetCamRotation.X, math.clamp(targetCamRotation.Y, -1.4, 1.4))
+		end
+		
+		camRotation = camRotation:Lerp(targetCamRotation, math.clamp(5 * dt, 0, 1))
+		
+		smoothMoveInput = smoothMoveInput:Lerp(rawMoveInput, math.clamp(4 * dt, 0, 1))
+		
+		local targetSpeed = (smoothMoveInput.Magnitude > 0.01) and config.moveSpeed or 0
+		currentSpeed = currentSpeed + (targetSpeed - currentSpeed) * math.clamp(acceleration * dt, 0, 1)
+		
+		camera.CFrame = CFrame.new(camPosition) * CFrame.Angles(0, camRotation.X, 0) * CFrame.Angles(camRotation.Y, 0, 0)
+		
+		if currentSpeed > 0.001 then
+			local lookV = camera.CFrame.LookVector
+			local rightV = camera.CFrame.RightVector
+			local moveVector = (rightV * smoothMoveInput.X) + (lookV * smoothMoveInput.Z)
+			camPosition = camPosition + (moveVector * currentSpeed * (dt * 60))
+		end
+		
+		if zoomInputVal ~= 0 then
+			local zoomStep = (zoomInputVal * (config.zoomSpeed / 20) * (config.zoomStrength / 500) * dt)
+			currentZoomFOV = math.clamp(currentZoomFOV + zoomStep, 5, 120)
+			camera.FieldOfView = currentZoomFOV
+		end
+		
+		camera.CFrame = CFrame.new(camPosition) * CFrame.Angles(0, camRotation.X, 0) * CFrame.Angles(camRotation.Y, 0, 0)
+	end
+	
+	-- Gerenciamento de visibilidade dos elementos
+	if isHudHidden then
+		if isAdvancedCleanActive and isFreecamActive then
+			rightPanel.Visible = false
+			zoomPanel.Visible = true
+			controlFrame.Visible = true
+			hidePanel.Visible = true
+		else
+			rightPanel.Visible = false
+			zoomPanel.Visible = false
+			controlFrame.Visible = false
+			hidePanel.Visible = true
+		end
+	else
+		rightPanel.Visible = true
+		hidePanel.Visible = true
+		if isFreecamActive then
+			controlFrame.Visible = true
+			zoomPanel.Visible = true
+		else
+			controlFrame.Visible = false
+			zoomPanel.Visible = false
+		end
+	end
+end)
